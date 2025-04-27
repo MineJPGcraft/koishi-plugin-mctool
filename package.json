@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-mctool",
   "description": "与MC服务器互通",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -9,13 +9,25 @@
     "dist"
   ],
   "license": "MIT",
-  "scripts": {},
   "keywords": [
     "chatbot",
     "koishi",
     "plugin"
+  ],  
+  "author": {
+    "name": "WindyPear-Team",
+    "email": "fireguo@flweb.cn"
+  },
+  "contributors": [
+    {
+      "name": "WindyPear-Team",
+      "email": "fireguo@flweb.cn"
+    }
   ],
-  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MineJPGcraft/koishi-plugin-mctool.git"
+  },
   "peerDependencies": {
     "koishi": "4.18.7"
   }
