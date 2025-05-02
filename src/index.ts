@@ -1,4 +1,4 @@
-import { Context, Schema, Session, h, Logger } from 'koishi';
+import { Context, Schema, Session, h, Logger, Bot } from 'koishi';
 import { } from '@koishijs/plugin-server'
 import { sendRconCommand, translateDeathMessage } from './utils'
 
@@ -8,7 +8,22 @@ const logger = new Logger(name);
 
 export const inject = ['database', 'server'];
 
+export const usage = `MC高级群服互通（不含消息）
+
+搭配Minecraft Webhook插件（Spigot）使用以便接收webhook消息：https://github.com/MineJPGcraft/Minecraft-Webhook
+
+功能：
+
+1.QQ号与Minecraft绑定
+
+2.死亡记录查询
+
+3.在线人数查询
+
+还有更多功能逐步开发中！`;
+
 export interface Config {
+    botid: string;
     host: string;
     port: number;
     password: string;
@@ -24,6 +39,7 @@ export interface Config {
 
 
 export const Config: Schema<Config> = Schema.object({
+    botid: Schema.string().required().description('机器人自身ID'),
     host: Schema.string().required().description('Minecraft 服务器 RCON 地址'),
     port: Schema.number().default(25575).description('Minecraft 服务器 RCON 端口'),
     password: Schema.string().role('secret').required().description('RCON 密码'),
@@ -31,7 +47,7 @@ export const Config: Schema<Config> = Schema.object({
     commandPrefix: Schema.string().default('mc').description('插件的主指令名'),
     rconConnectTimeout: Schema.number().default(5000).description('RCON 连接超时时间 (毫秒)'),
     rconResponseTimeout: Schema.number().default(10000).description('RCON 命令响应超时时间 (毫秒)'),
-    webhookPath: Schema.string().default('/mc-webhook').description('Minecraft 服务器发送 webhook 的路径'),
+    webhookPath: Schema.string().default('/mcwebhook').description('Minecraft 服务器发送 webhook 的路径'),
     webhookSecret: Schema.string().role('secret').description('可选，Webhook 安全密钥。如果设置，请配置服务器在请求头中带上 "X-Secret" 或作为查询参数发送。'),
     bindChannel: Schema.string().description('可选，告知玩家进行绑定的 Koishi 频道/群聊 ID。'),
     worldMap: Schema.dict(Schema.string().description('显示名称')).role('table').description('自定义地图显示名称'),
@@ -50,6 +66,7 @@ export interface MinecraftBinding {
     koishiUserId: string;
     mcUsername: string;
     bindTimestamp: Date;
+    isfreeze: boolean;
 }
 
 export interface MinecraftDeath {
@@ -80,6 +97,7 @@ export function apply(ctx: Context, config: Config) {
         koishiUserId: 'string',
         mcUsername: 'string',
         bindTimestamp: 'timestamp',
+        isfreeze: 'boolean'
     }, {
         primary: 'id',
         autoInc: true,
@@ -142,8 +160,19 @@ export function apply(ctx: Context, config: Config) {
             try {
                 const existingBinding = await ctx.database.get('minecraft_bindings', { mcUsername });
                 if (existingBinding.length > 0) {
-                    logger.info(`[Webhook] Player ${mcUsername} is already bound (Koishi user: ${existingBinding[0].platform}:${existingBinding[0].koishiUserId}). Doing nothing.`);
                     c.response.status = 200;
+                    if (existingBinding[0].isfreeze) {
+                        const kickMessage = `账户已被冻结，请进入QQ向机器人发送 "${mainCommand}.unfreeze" 解除冻结`
+                        const kickCommand = `kick ${mcUsername} ${kickMessage}`;
+                        const kickResponse = await sendRconCommand(config, kickCommand);
+                        return kickResponse;
+                    }
+                    ctx.bots.forEach((bot) => {
+                        if(bot.selfId = config.botid) {
+                            const d = new Date();
+                            bot.sendPrivateMessage(existingBinding[0].koishiUserId, `您的 Minecraft 账号 ${mcUsername} 在 ${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日 ${d.getHours()} 时 ${d.getMinutes()} 分 ${d.getSeconds()} 秒 登录了服务器。如果不是你的操作，请输入"${mainCommand}.freeze"冻结账号。`)
+                        }
+                    })
                     return 'Already bound';
                 }
                 const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
@@ -291,6 +320,7 @@ export function apply(ctx: Context, config: Config) {
                     koishiUserId: session.userId,
                     mcUsername: mcUsername,
                     bindTimestamp: new Date(),
+                    isfreeze: false,
                 });
 
                 //logger.success(`[CodeCmd] Binding saved: ${session.platform}:${session.userId} <-> ${mcUsername}`);
@@ -498,5 +528,46 @@ export function apply(ctx: Context, config: Config) {
                 return `在线人数：${onlineCount}/${maxCount}`;
             }
             return cleanedString;
+        })
+    cmd.subcommand('.freeze', '冻结账号')
+        .action(async ({ session }) => {
+            if (!session?.userId || !session?.platform) {
+                return '无法获取用户信息，请稍后再试。';
+            }
+            const platform = session.platform;
+            const koishiUserId = session.userId;
+
+            try {
+                const binding = await ctx.database.get('minecraft_bindings', { platform, koishiUserId });
+                if (binding.length === 0) {
+                    return `您尚未绑定 Minecraft 账号。请通过进入 Minecraft 服务器触发绑定流程，然后在QQ中使用 \`${mainCommand}.code <验证码>\` 完成绑定。`;
+                }
+                //踢出玩家
+                const response = await sendRconCommand(config, `kick ${binding[0].mcUsername} 帐号已被冻结`)
+                await ctx.database.set('minecraft_bindings', { platform, koishiUserId }, { isfreeze: true });
+                return '已冻结该账号。'
+            } catch (error) {
+                return '发生错误，请稍后再试。';
+            }
+        })
+    cmd.subcommand('.unfreeze', '解冻账号')
+        .action(async ({ session }) => {
+            if (!session?.userId || !session?.platform) {
+                return '无法获取用户信息，请稍后再试。';
+            }
+            const platform = session.platform;
+            const koishiUserId = session.userId;
+
+            try {
+                const binding = await ctx.database.get('minecraft_bindings', { platform, koishiUserId });
+                if (binding.length === 0){
+                    return `您尚未绑定 Minecraft 账号。请通过进入 Minecraft 服务器触发绑定流程，然后在QQ中使用 \`${mainCommand}.code <验证码>\` 完成绑定。`;
+                }
+                await ctx.database.set('minecraft_bindings', { platform, koishiUserId }, { isfreeze: false });
+                return '已解冻该账号。'
+                }
+            catch (error) {
+                return '发生错误，请稍后再试。';
+            }
         })
 }
