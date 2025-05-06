@@ -168,7 +168,7 @@ export function apply(ctx: Context, config: Config) {
                         return kickResponse;
                     }
                     ctx.bots.forEach((bot) => {
-                        if(bot.selfId = config.botid) {
+                        if (bot.selfId = config.botid) {
                             const d = new Date();
                             bot.sendPrivateMessage(existingBinding[0].koishiUserId, `您的 Minecraft 账号 ${mcUsername} 在 ${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日 ${d.getHours()} 时 ${d.getMinutes()} 分 ${d.getSeconds()} 秒 登录了服务器。如果不是你的操作，请输入"${mainCommand}.freeze"冻结账号。`)
                         }
@@ -560,14 +560,29 @@ export function apply(ctx: Context, config: Config) {
 
             try {
                 const binding = await ctx.database.get('minecraft_bindings', { platform, koishiUserId });
-                if (binding.length === 0){
+                if (binding.length === 0) {
                     return `您尚未绑定 Minecraft 账号。请通过进入 Minecraft 服务器触发绑定流程，然后在QQ中使用 \`${mainCommand}.code <验证码>\` 完成绑定。`;
                 }
                 await ctx.database.set('minecraft_bindings', { platform, koishiUserId }, { isfreeze: false });
                 return '已解冻该账号。'
-                }
+            }
             catch (error) {
                 return '发生错误，请稍后再试。';
             }
         })
+    ctx.on('guild-member-removed', async (session) =>{
+        if (session.guildId === config.bindChannel) {
+            try {
+                const binding = await ctx.database.get('minecraft_bindings', { platform: session.platform, koishiUserId: session.userId });
+                if (binding.length === 0) {
+                    return;
+                }
+                await ctx.database.remove('minecraft_bindings', { platform: session.platform, koishiUserId: session.userId });
+                return;
+            }
+            catch (e) {
+                return;
+            }
+        }
+    })
 }
