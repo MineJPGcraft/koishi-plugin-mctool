@@ -33,7 +33,7 @@ export interface Config {
     rconResponseTimeout: number;
     webhookPath: string;
     webhookSecret?: string;
-    bindChannel?: string;
+    bindChannel: string;
     worldMap: Record<string, string>;
 }
 
@@ -49,7 +49,7 @@ export const Config: Schema<Config> = Schema.object({
     rconResponseTimeout: Schema.number().default(10000).description('RCON 命令响应超时时间 (毫秒)'),
     webhookPath: Schema.string().default('/mcwebhook').description('Minecraft 服务器发送 webhook 的路径'),
     webhookSecret: Schema.string().role('secret').description('可选，Webhook 安全密钥。如果设置，请配置服务器在请求头中带上 "X-Secret" 或作为查询参数发送。'),
-    bindChannel: Schema.string().description('可选，告知玩家进行绑定的 Koishi 频道/群聊 ID。'),
+    bindChannel: Schema.string().description('群聊 ID').required(),
     worldMap: Schema.dict(Schema.string().description('显示名称')).role('table').description('自定义地图显示名称'),
 });
 
@@ -262,6 +262,16 @@ export function apply(ctx: Context, config: Config) {
                 c.response.status = 500;
                 return 'Database error recording death';
             }
+        }
+        //聊天事件
+        else if (payload.event_type === 'chat') {
+            //发送到设置的群
+            ctx.bots.forEach((bot) => {
+                if (bot.selfId = config.botid) {
+                    bot.sendMessage(config.bindChannel, `${payload.player_name} : ${payload.chat_message}`)
+                }
+            })
+            c.response.status = 200;
         } else {
             logger.debug(`[Webhook] Received non-login event or missing data from ${c.request.ip}. Event type: ${payload.event_type}, Player: ${payload.player_name}`);
             c.response.status = 200;
@@ -570,7 +580,7 @@ export function apply(ctx: Context, config: Config) {
                 return '发生错误，请稍后再试。';
             }
         })
-    ctx.on('guild-member-removed', async (session) =>{
+    ctx.on('guild-member-removed', async (session) => {
         if (session.guildId === config.bindChannel) {
             try {
                 const binding = await ctx.database.get('minecraft_bindings', { platform: session.platform, koishiUserId: session.userId });
