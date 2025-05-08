@@ -20,6 +20,8 @@ export const usage = `MC高级群服互通（不含消息）
 
 3.在线人数查询
 
+4.同步聊天
+
 还有更多功能逐步开发中！`;
 
 export interface Config {
@@ -35,6 +37,9 @@ export interface Config {
     webhookSecret?: string;
     bindChannel: string;
     worldMap: Record<string, string>;
+    ischat: boolean;
+    isdeath: boolean;
+    isloginmsg: boolean;
 }
 
 
@@ -51,6 +56,9 @@ export const Config: Schema<Config> = Schema.object({
     webhookSecret: Schema.string().role('secret').description('可选，Webhook 安全密钥。如果设置，请配置服务器在请求头中带上 "X-Secret" 或作为查询参数发送。'),
     bindChannel: Schema.string().description('群聊 ID').required(),
     worldMap: Schema.dict(Schema.string().description('显示名称')).role('table').description('自定义地图显示名称'),
+    ischat: Schema.boolean().default(true).description('是否开启聊天同步'),
+    isdeath: Schema.boolean().default(true).description('是否开启死亡信息记录'),
+    isloginmsg: Schema.boolean().default(true).description('是否开启登录提醒'),
 });
 
 declare module 'koishi' {
@@ -167,13 +175,15 @@ export function apply(ctx: Context, config: Config) {
                         const kickResponse = await sendRconCommand(config, kickCommand);
                         return kickResponse;
                     }
-                    ctx.bots.forEach((bot) => {
-                        if (bot.selfId = config.botid) {
-                            const d = new Date();
-                            bot.sendPrivateMessage(existingBinding[0].koishiUserId, `您的 Minecraft 账号 ${mcUsername} 在 ${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日 ${d.getHours()} 时 ${d.getMinutes()} 分 ${d.getSeconds()} 秒 登录了服务器。如果不是你的操作，请输入"${mainCommand}.freeze"冻结账号。`)
-                        }
-                    })
-                    return 'Already bound';
+                    if (config.isloginmsg) {
+                        ctx.bots.forEach((bot) => {
+                            if (bot.selfId = config.botid) {
+                                const d = new Date();
+                                bot.sendPrivateMessage(existingBinding[0].koishiUserId, `您的 Minecraft 账号 ${mcUsername} 在 ${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日 ${d.getHours()} 时 ${d.getMinutes()} 分 ${d.getSeconds()} 秒 登录了服务器。如果不是你的操作，请输入"${mainCommand}.freeze"冻结账号。`)
+                            }
+                        })
+                    }
+                    return 'OK';
                 }
                 const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
                 logger.info(`[Webhook] Starting verification for ${mcUsername}. Code: ${verificationCode}`);
@@ -221,7 +231,7 @@ export function apply(ctx: Context, config: Config) {
             }
 
         }
-        else if (payload.event_type === 'death' && payload.player_name) {
+        else if (payload.event_type === 'death' && payload.player_name && config.isdeath) {
             const mcUsername = payload.player_name;
             const reason = payload.death_message ?? '未知';
             const deathTime = payload.timestamp ? new Date(payload.timestamp) : new Date();
@@ -264,7 +274,7 @@ export function apply(ctx: Context, config: Config) {
             }
         }
         //聊天事件
-        else if (payload.event_type === 'chat') {
+        else if (payload.event_type === 'chat' && config.ischat) {
             //发送到设置的群
             ctx.bots.forEach((bot) => {
                 if (bot.selfId = config.botid) {
@@ -273,9 +283,8 @@ export function apply(ctx: Context, config: Config) {
             })
             c.response.status = 200;
         } else {
-            logger.debug(`[Webhook] Received non-login event or missing data from ${c.request.ip}. Event type: ${payload.event_type}, Player: ${payload.player_name}`);
             c.response.status = 200;
-            return 'Not a login event';
+            return 'Not a valid event';
         }
     });
 
@@ -473,59 +482,61 @@ export function apply(ctx: Context, config: Config) {
                 return '解除绑定时发生数据库错误，请联系管理员。';
             }
         });
-    cmd.subcommand('.deaths', '查询死亡记录')
-        .action(async ({ session }) => {
-            if (!session?.userId || !session?.platform) {
-                return '无法获取用户信息，请稍后再试。';
-            }
-            const platform = session.platform;
-            const koishiUserId = session.userId;
-
-            try {
-                const binding = await ctx.database.get('minecraft_bindings', { platform, koishiUserId });
-                if (binding.length === 0) {
-                    return `您尚未绑定 Minecraft 账号。请通过进入 Minecraft 服务器触发绑定流程，然后在QQ中使用 \`${mainCommand}.code <验证码>\` 完成绑定。`;
+    if (config.isdeath) {
+        cmd.subcommand('.deaths', '查询死亡记录')
+            .action(async ({ session }) => {
+                if (!session?.userId || !session?.platform) {
+                    return '无法获取用户信息，请稍后再试。';
                 }
+                const platform = session.platform;
+                const koishiUserId = session.userId;
 
-                const mcUsername = binding[0].mcUsername;
-
-                const deathRecords = await ctx.database.get('minecraft_deaths', { mcUsername }, {
-                    sort: { deathTime: 'desc' },
-                    limit: 5
-                });
-
-                if (deathRecords.length === 0) {
-                    return `您的 Minecraft 账号 (${mcUsername}) 暂无最近的死亡记录。`;
-                }
-
-                let reply = `您的 Minecraft 账号 (${mcUsername}) 最近 ${deathRecords.length} 次死亡记录：\n`;
-
-                deathRecords.forEach(record => {
-                    const deathTime = new Date(record.deathTime).toLocaleString();
-                    let dimension: string;
-                    if (config[record.dimension]) {
-                        dimension = config[record.dimension];
-                    } else {
-                        dimension = record.dimension === 'world' ? '主世界' :
-                            record.dimension === 'nether' ? '下界' :
-                                record.dimension === 'end' ? '末地' :
-                                    record.dimension;
+                try {
+                    const binding = await ctx.database.get('minecraft_bindings', { platform, koishiUserId });
+                    if (binding.length === 0) {
+                        return `您尚未绑定 Minecraft 账号。请通过进入 Minecraft 服务器触发绑定流程，然后在QQ中使用 \`${mainCommand}.code <验证码>\` 完成绑定。`;
                     }
-                    const location = (record.x !== null && record.y !== null && record.z !== null)
-                        ? `位置 [${dimension}] ${Math.round(record.x)}, ${Math.round(record.y)}, ${Math.round(record.z)}`
-                        : `位置未知`;
-                    const reason = translateDeathMessage(record.reason, true);
 
-                    reply += `- ${deathTime} 在 ${location}${reason}\n`;
-                });
+                    const mcUsername = binding[0].mcUsername;
 
-                return reply;
+                    const deathRecords = await ctx.database.get('minecraft_deaths', { mcUsername }, {
+                        sort: { deathTime: 'desc' },
+                        limit: 5
+                    });
 
-            } catch (dbError: any) {
-                logger.error(`[CmdDeaths] Database error retrieving death records for ${platform}:${koishiUserId}:`, dbError);
-                return '查询死亡记录时发生数据库错误，请联系管理员。';
-            }
-        });
+                    if (deathRecords.length === 0) {
+                        return `您的 Minecraft 账号 (${mcUsername}) 暂无最近的死亡记录。`;
+                    }
+
+                    let reply = `您的 Minecraft 账号 (${mcUsername}) 最近 ${deathRecords.length} 次死亡记录：\n`;
+
+                    deathRecords.forEach(record => {
+                        const deathTime = new Date(record.deathTime).toLocaleString();
+                        let dimension: string;
+                        if (config[record.dimension]) {
+                            dimension = config[record.dimension];
+                        } else {
+                            dimension = record.dimension === 'world' ? '主世界' :
+                                record.dimension === 'nether' ? '下界' :
+                                    record.dimension === 'end' ? '末地' :
+                                        record.dimension;
+                        }
+                        const location = (record.x !== null && record.y !== null && record.z !== null)
+                            ? `位置 [${dimension}] ${Math.round(record.x)}, ${Math.round(record.y)}, ${Math.round(record.z)}`
+                            : `位置未知`;
+                        const reason = translateDeathMessage(record.reason, true);
+
+                        reply += `- ${deathTime} 在 ${location}${reason}\n`;
+                    });
+
+                    return reply;
+
+                } catch (dbError: any) {
+                    logger.error(`[CmdDeaths] Database error retrieving death records for ${platform}:${koishiUserId}:`, dbError);
+                    return '查询死亡记录时发生数据库错误，请联系管理员。';
+                }
+            });
+    }
     cmd.subcommand('.list', '查看在线玩家')
         .action(async ({ session }) => {
             let response = await sendRconCommand(config, 'list');
@@ -593,6 +604,12 @@ export function apply(ctx: Context, config: Config) {
             catch (e) {
                 return;
             }
+        }
+    })
+    ctx.on('message', async (session) => {
+        if (session.channelId === config.bindChannel && config.ischat) {
+            const chatCommand = `tellraw @a {"text":"[QQ群] ","color":"gold","bold":true,"extra":[{"text":"${session.username} : ${session.content}","color":"aqua"}]}`;
+            const kickResponse = await sendRconCommand(config, chatCommand);
         }
     })
 }
