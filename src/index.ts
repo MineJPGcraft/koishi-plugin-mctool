@@ -8,7 +8,7 @@ const logger = new Logger(name);
 
 export const inject = ['database', 'server'];
 
-export const usage = `MC高级群服互通（不含消息）
+export const usage = `MC高级群服互通
 
 搭配Minecraft Webhook插件（Spigot）使用以便接收webhook消息：https://github.com/MineJPGcraft/Minecraft-Webhook
 
@@ -26,6 +26,7 @@ export const usage = `MC高级群服互通（不含消息）
 
 export interface Config {
     botid: string;
+    platform: string;
     host: string;
     port: number;
     password: string;
@@ -40,11 +41,13 @@ export interface Config {
     ischat: boolean;
     isdeath: boolean;
     isloginmsg: boolean;
+    isjoinquitmsg: boolean;
 }
 
 
 export const Config: Schema<Config> = Schema.object({
     botid: Schema.string().required().description('机器人自身ID'),
+    platform: Schema.string().default('onebot').description('机器人平台'),
     host: Schema.string().required().description('Minecraft 服务器 RCON 地址'),
     port: Schema.number().default(25575).description('Minecraft 服务器 RCON 端口'),
     password: Schema.string().role('secret').required().description('RCON 密码'),
@@ -59,6 +62,7 @@ export const Config: Schema<Config> = Schema.object({
     ischat: Schema.boolean().default(true).description('是否开启聊天同步'),
     isdeath: Schema.boolean().default(true).description('是否开启死亡信息记录'),
     isloginmsg: Schema.boolean().default(true).description('是否开启登录提醒'),
+    isjoinquitmsg: Schema.boolean().default(true).description('是否开启加入退出提醒'),
 });
 
 declare module 'koishi' {
@@ -97,6 +101,7 @@ interface PendingVerification {
 
 
 export function apply(ctx: Context, config: Config) {
+    ctx.i18n.define('zh-CN', require('./locales/zh-CN'))
     const mainCommand = config.commandPrefix || 'mc';
 
     ctx.model.extend('minecraft_bindings', {
@@ -170,41 +175,50 @@ export function apply(ctx: Context, config: Config) {
                 if (existingBinding.length > 0) {
                     c.response.status = 200;
                     if (existingBinding[0].isfreeze) {
-                        const kickMessage = `账户已被冻结，请进入QQ向机器人发送 "${mainCommand}.unfreeze" 解除冻结`
+                        //没session没法使用本地化，实在是没办法。。。
+                        const bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
+                        const session = bot.session()
+                        const kickMessage = session.text('mctool.freezemsg', [mainCommand])
                         const kickCommand = `kick ${mcUsername} ${kickMessage}`;
                         const kickResponse = await sendRconCommand(config, kickCommand);
                         return kickResponse;
                     }
                     if (config.isloginmsg) {
-                        ctx.bots.forEach((bot) => {
-                            if (bot.selfId = config.botid) {
-                                const d = new Date();
-                                bot.sendPrivateMessage(existingBinding[0].koishiUserId, `您的 Minecraft 账号 ${mcUsername} 在 ${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日 ${d.getHours()} 时 ${d.getMinutes()} 分 ${d.getSeconds()} 秒 登录了服务器。如果不是你的操作，请输入"${mainCommand}.freeze"冻结账号。`)
-                            }
-                        })
+                        const d = new Date();
+                        const bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
+                        if (bot) {
+                            const session = bot.session()
+                            bot.sendPrivateMessage(existingBinding[0].koishiUserId, session.text('mctool.loginwarn', [mcUsername, d.getFullYear(), d.getMonth(), d.getDay(), d.getHours(), d.getMinutes(), d.getSeconds(), mainCommand]))
+                        }
+                    }
+                    if (config.isjoinquitmsg) {
+                        const bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
+                        if (bot) {
+                            const session = bot.session()
+                            bot.sendMessage(config.bindChannel, session.text('mctool.loginmsg', [mcUsername]))
+                        }
                     }
                     return 'OK';
                 }
                 const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
                 logger.info(`[Webhook] Starting verification for ${mcUsername}. Code: ${verificationCode}`);
 
-                let kickMessage = `你的验证码是: ${verificationCode}. 请对机器人输入 "${mainCommand}.code ${verificationCode}" 来绑定你的账号。`;
-                if (config.bindChannel) {
-                    kickMessage = `你的验证码是: ${verificationCode}. 在QQ群 ${config.bindChannel} 或私聊机器人输入 "${mainCommand}.code ${verificationCode}" 来绑定你的账号。`;
-                }
+                let bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
+                let session = bot.session()
+                let kickMessage = session.text('mctool.bindmsg', [verificationCode,config.bindChannel, mainCommand]);
                 const kickCommand = `kick ${mcUsername} ${kickMessage}`;
 
                 try {
                     const kickResponse = await sendRconCommand(config, kickCommand);
-                    logger.info(`[Webhook] Kicked player ${mcUsername} with verification code. RCON Response: ${kickResponse}`);
+                    //logger.info(`[Webhook] Kicked player ${mcUsername} with verification code. RCON Response: ${kickResponse}`);
 
                     const timeoutTimer = setTimeout(async () => {
                         const pending = pendingVerifications.get(mcUsername);
                         if (pending && pending.verificationCode === verificationCode) {
-                            logger.warn(`[Pending] Verification timed out for MC user: ${mcUsername}`);
+                            //logger.warn(`[Pending] Verification timed out for MC user: ${mcUsername}`);
                             pendingVerifications.delete(mcUsername);
                         } else {
-                            logger.debug(`[Pending] Timeout triggered for ${mcUsername} but pending state changed or cleared.`);
+                            //logger.debug(`[Pending] Timeout triggered for ${mcUsername} but pending state changed or cleared.`);
                         }
 
                     }, config.verificationTimeout);
@@ -220,7 +234,7 @@ export function apply(ctx: Context, config: Config) {
                     return 'Verification process initiated';
 
                 } catch (rconError: any) {
-                    logger.error(`[Webhook] Failed to kick player ${mcUsername} via RCON:`, rconError.message);
+                    //logger.error(`[Webhook] Failed to kick player ${mcUsername} via RCON:`, rconError.message);
                     return 'Failed to kick player via RCON';
                 }
 
@@ -252,7 +266,7 @@ export function apply(ctx: Context, config: Config) {
                     y,
                     z,
                 });
-                logger.debug(`[Webhook] Recorded death for ${mcUsername}.`);
+                //logger.debug(`[Webhook] Recorded death for ${mcUsername}.`);
 
                 const deathRecords = await ctx.database.get('minecraft_deaths', { mcUsername }, {
                     sort: { deathTime: 'desc' },
@@ -261,7 +275,7 @@ export function apply(ctx: Context, config: Config) {
                 if (deathRecords.length > 5) {
                     const idsToDelete = deathRecords.slice(5).map(record => record.id);
                     const deleteResult = await ctx.database.remove('minecraft_deaths', { id: { $in: idsToDelete } });
-                    logger.debug(`[Webhook] Deleted ${deleteResult.removed} old death records for ${mcUsername}.`);
+                    //logger.debug(`[Webhook] Deleted ${deleteResult.removed} old death records for ${mcUsername}.`);
                 }
 
                 c.response.status = 200;
@@ -276,11 +290,24 @@ export function apply(ctx: Context, config: Config) {
         //聊天事件
         else if (payload.event_type === 'chat' && config.ischat) {
             //发送到设置的群
-            ctx.bots.forEach((bot) => {
-                if (bot.selfId = config.botid) {
-                    bot.sendMessage(config.bindChannel, `${payload.player_name} : ${payload.chat_message}`)
+            const bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
+            if (bot) {
+                const session = bot.session();
+                bot.sendMessage(config.bindChannel, session.text('mctool.syncmsg', [payload.player_name, payload.chat_message]))
+            }
+            c.response.status = 200;
+        }
+        else if (payload.event_type === 'quit' && config.isjoinquitmsg) {
+            //先判断是否绑定
+            const mcUsername = payload.player_name;
+            const existingBinding = await ctx.database.get('minecraft_bindings', { mcUsername });
+            if (existingBinding.length > 0) {
+                const bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
+                if (bot) {
+                    const session = bot.session();
+                    bot.sendMessage(config.bindChannel, session.text('mctool.quitmsg', [mcUsername]))
                 }
-            })
+            }
             c.response.status = 200;
         } else {
             c.response.status = 200;
@@ -343,7 +370,7 @@ export function apply(ctx: Context, config: Config) {
                 });
 
                 //logger.success(`[CodeCmd] Binding saved: ${session.platform}:${session.userId} <-> ${mcUsername}`);
-                return `🎉 绑定成功！您的QQ账号 (${session.username}) 现已绑定到 Minecraft 账号: ${mcUsername}。现在可以进入服务器了。`;
+                return session.text('mctool.bindsuccess', [session.username, mcUsername]);
 
             } catch (dbError: any) {
                 logger.error(`[CodeCmd] Database error while saving binding for ${session.platform}:${session.userId}:`, dbError);
@@ -408,19 +435,7 @@ export function apply(ctx: Context, config: Config) {
                     bindTimestamp: new Date(),
                 });
 
-                //logger.success(`[Middleware] Binding saved (DM): ${session.platform}:${session.userId} <-> ${mcUsername}`);
-
-                const whitelistAddCmd = `whitelist add ${mcUsername}`;
-                try {
-                    const whitelistAddResp = await sendRconCommand(config, whitelistAddCmd);
-                    //logger.info(`[Middleware] Added ${mcUsername} to whitelist after successful binding (DM). Response: ${whitelistAddResp}`);
-                } catch (rconError: any) {
-                    //logger.error(`[Middleware] Failed to add ${mcUsername} to whitelist after successful binding (DM):`, rconError.message);
-                    await session.send(`注意：成功绑定账号 (${mcUsername})，但添加白名单失败 (${rconError.message})。请联系管理员手动添加白名单。`);
-                    return;
-                }
-
-                await session.send(`🎉 绑定成功！您的QQ号 (${session.username}) 现已绑定到 Minecraft 账号: ${mcUsername}。现在可以进入服务器了。`);
+                await session.send(session.text('mctool.bindsuccess', [session.username, mcUsername]));
                 return;
 
             } catch (dbError: any) {
@@ -607,9 +622,10 @@ export function apply(ctx: Context, config: Config) {
         }
     })
     ctx.on('message', async (session) => {
-        if (session.channelId === config.bindChannel && config.ischat) {
-            const chatCommand = `tellraw @a {"text":"[QQ群] ","color":"gold","bold":true,"extra":[{"text":"${session.username} : ${session.content}","color":"aqua"}]}`;
-            const kickResponse = await sendRconCommand(config, chatCommand);
+        if (session.channelId === config.bindChannel && config.ischat && session.userId !== config.botid && !session.isDirect) {
+            const chatCommand = `tellraw @a [{"text":"[QQ群] ","color":"gold"},{"text":"<","color":"white"},{"text":"${session.username}","color":"dark_red"},{"text":"> ","color":"white"},{"text":"${session.content}","color":"white"}]`;
+            const Response = await sendRconCommand(config, chatCommand);
+            //logger.info(session)
         }
     })
 }

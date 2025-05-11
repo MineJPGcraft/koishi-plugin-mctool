@@ -1,0 +1,8 @@
+mctool: 
+  freezemsg: 账户已被冻结，请进入QQ向机器人发送 "{0}.unfreeze" 解除冻结
+  loginwarn: 您的 Minecraft 账号 {0} 在 {1} 年 {2} 月 {3} 日 {4} 时 {5} 分 {6} 秒 登录了服务器。如果不是你的操作，请输入"{7}.freeze"冻结账号。
+  loginmsg: 玩家 {0} 加入了服务器
+  quitmsg: 玩家 {0} 离开了服务器
+  bindmsg: '你的验证码是: {0}. 在QQ群 {1} 或私聊机器人输入 "{2}.code {0}" 来绑定你的账号。'
+  syncmsg: '{0} : {1}'
+  bindsuccess: '🎉 绑定成功！您的QQ账号 ({0}) 现已绑定到 Minecraft 账号: {1}。现在可以进入服务器了。'

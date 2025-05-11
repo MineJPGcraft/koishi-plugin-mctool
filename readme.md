@@ -4,7 +4,7 @@
 
 与MC服务器互通
 
-MC高级群服互通（不含消息）
+MC高级群服互通
 
 搭配Minecraft Webhook插件（Spigot）使用以便接收webhook消息：https://github.com/MineJPGcraft/Minecraft-Webhook
 
