@@ -44,6 +44,7 @@ export interface Config {
     isjoinquitmsg: boolean;
     isDev: boolean;
     getGroupusername: boolean;
+    isAt: boolean;
 }
 
 
@@ -67,6 +68,7 @@ export const Config: Schema<Config> = Schema.object({
     isjoinquitmsg: Schema.boolean().default(true).description('是否开启加入退出提醒'),
     isDev: Schema.boolean().default(false).description('是否为开发模式(会显示调试信息)'),
     getGroupusername: Schema.boolean().default(false).description('是否尝试获取群聊用户名(仅OneBot)'),
+    isAt: Schema.boolean().default(true).description('用户被提及是否在游戏里提示'),
 });
 
 declare module 'koishi' {
@@ -201,11 +203,11 @@ export function apply(ctx: Context, config: Config) {
                             const session = bot.session()
                             let username: string;
                             if (config.getGroupusername) {
-                                username = await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId)
+                                username = (await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId)).nickname
                             } else {
                                 username = mcUsername
                             }
-                            bot.sendMessage(config.bindChannel, session.text('mctool.loginmsg', [mcUsername]))
+                            bot.sendMessage(config.bindChannel, session.text('mctool.loginmsg', [username]))
                         }
                     }
                     return 'OK';
@@ -307,7 +309,8 @@ export function apply(ctx: Context, config: Config) {
                 const existingBinding = await ctx.database.get('minecraft_bindings', { mcUsername });
                 let username: string;
                 if (config.getGroupusername) {
-                    username = await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId)
+                    username = (await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId)).nickname
+                    // logger.info(await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId))
                 } else {
                     username = mcUsername
                 }
@@ -323,7 +326,14 @@ export function apply(ctx: Context, config: Config) {
                 const bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
                 if (bot) {
                     const session = bot.session();
-                    bot.sendMessage(config.bindChannel, session.text('mctool.quitmsg', [mcUsername]))
+                    let username: string;
+                    if (config.getGroupusername) {
+                        username = (await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId)).nickname
+                        // logger.info(await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId))
+                    } else {
+                        username = mcUsername
+                    }
+                    bot.sendMessage(config.bindChannel, session.text('mctool.quitmsg', [username]))
                 }
             }
             c.response.status = 200;
@@ -655,6 +665,16 @@ export function apply(ctx: Context, config: Config) {
             const chatCommand = `tellraw @a [{"text":"${isBind ? '' : '[QQ群] '}", "color":"gold"},{"text":"<${username}>","color":"white"},{"text":"${session.content}","color":"white"}]`;
             const Response = await sendRconCommand(config, chatCommand);
             //logger.info(session)
+            const Atlist: string[] = session.elements.filter((element) => element.type === 'at').map((element) => element.attrs.id);
+            if (Atlist.length > 0 && config.isAt) {
+                for (const atid of Atlist) {
+                    const binding = await ctx.database.get('minecraft_bindings', { platform: session.platform, koishiUserId: atid });
+                    if (binding.length > 0) {
+                        const chatCommand = `tellraw ${binding[0].mcUsername} [{"color":"gold","text":"你被提及了"}]`;
+                        const Response = await sendRconCommand(config, chatCommand);
+                    }
+                }
+            }
         }
     })
 }
