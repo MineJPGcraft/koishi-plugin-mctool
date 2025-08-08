@@ -42,6 +42,8 @@ export interface Config {
     isdeath: boolean;
     isloginmsg: boolean;
     isjoinquitmsg: boolean;
+    isDev: boolean;
+    getGroupusername: boolean;
 }
 
 
@@ -63,6 +65,8 @@ export const Config: Schema<Config> = Schema.object({
     isdeath: Schema.boolean().default(true).description('是否开启死亡信息记录'),
     isloginmsg: Schema.boolean().default(true).description('是否开启登录提醒'),
     isjoinquitmsg: Schema.boolean().default(true).description('是否开启加入退出提醒'),
+    isDev: Schema.boolean().default(false).description('是否为开发模式(会显示调试信息)'),
+    getGroupusername: Schema.boolean().default(false).description('是否尝试获取群聊用户名(仅OneBot)'),
 });
 
 declare module 'koishi' {
@@ -140,7 +144,7 @@ export function apply(ctx: Context, config: Config) {
         if (pending) {
             clearTimeout(pending.timeoutTimer);
             pendingVerifications.delete(mcUsername);
-            logger.info(`[Pending] Cleared pending verification for MC user: ${mcUsername}`);
+            if (config.isDev) logger.info(`[Pending] Cleared pending verification for MC user: ${mcUsername}`);
         }
     }
 
@@ -148,7 +152,7 @@ export function apply(ctx: Context, config: Config) {
         if (config.webhookSecret) {
             const secret = c.request.headers['x-secret'] || c.request.query.secret;
             if (secret !== config.webhookSecret) {
-                logger.warn(`[Webhook] Received request with invalid secret from ${c.request.ip}`);
+                if (config.isDev) logger.warn(`[Webhook] Received request with invalid secret from ${c.request.ip}`);
                 c.response.status = 401;
                 return 'Invalid secret';
             }
@@ -161,14 +165,14 @@ export function apply(ctx: Context, config: Config) {
                 throw new Error('Invalid JSON body');
             }
         } catch (error: any) {
-            logger.warn(`[Webhook] Failed to parse JSON body from ${c.request.ip}: ${error.message}`);
+            if (config.isDev) logger.warn(`[Webhook] Failed to parse JSON body from ${c.request.ip}: ${error.message}`);
             c.response.status = 400;
             return 'Invalid JSON body';
         }
 
         if (payload.event_type === 'login' && payload.player_name) {
             const mcUsername = payload.player_name;
-            logger.info(`[Webhook] Received login event for player: ${mcUsername}`);
+            if (config.isDev) logger.info(`[Webhook] Received login event for player: ${mcUsername}`);
 
             try {
                 const existingBinding = await ctx.database.get('minecraft_bindings', { mcUsername });
@@ -195,17 +199,23 @@ export function apply(ctx: Context, config: Config) {
                         const bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
                         if (bot) {
                             const session = bot.session()
+                            let username: string;
+                            if (config.getGroupusername) {
+                                username = await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId)
+                            } else {
+                                username = mcUsername
+                            }
                             bot.sendMessage(config.bindChannel, session.text('mctool.loginmsg', [mcUsername]))
                         }
                     }
                     return 'OK';
                 }
                 const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-                logger.info(`[Webhook] Starting verification for ${mcUsername}. Code: ${verificationCode}`);
+                if (config.isDev) logger.info(`[Webhook] Starting verification for ${mcUsername}. Code: ${verificationCode}`);
 
                 let bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
                 let session = bot.session()
-                let kickMessage = session.text('mctool.bindmsg', [verificationCode,config.bindChannel, mainCommand]);
+                let kickMessage = session.text('mctool.bindmsg', [verificationCode, config.bindChannel, mainCommand]);
                 const kickCommand = `kick ${mcUsername} ${kickMessage}`;
 
                 try {
@@ -293,7 +303,15 @@ export function apply(ctx: Context, config: Config) {
             const bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
             if (bot) {
                 const session = bot.session();
-                bot.sendMessage(config.bindChannel, session.text('mctool.syncmsg', [payload.player_name, payload.chat_message]))
+                const mcUsername = payload.player_name;
+                const existingBinding = await ctx.database.get('minecraft_bindings', { mcUsername });
+                let username: string;
+                if (config.getGroupusername) {
+                    username = await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId)
+                } else {
+                    username = mcUsername
+                }
+                bot.sendMessage(config.bindChannel, session.text('mctool.syncmsg', [username, payload.chat_message]))
             }
             c.response.status = 200;
         }
@@ -394,7 +412,7 @@ export function apply(ctx: Context, config: Config) {
     ctx.middleware(async (session, next) => {
         if (session.isDirect && /^\d{6}$/.test(session.content ?? '')) {
             const code = session.content!;
-            logger.debug(`[Middleware] Received potential verification code via DM: ${code}`);
+            if (config.isDev) logger.debug(`[Middleware] Received potential verification code via DM: ${code}`);
 
             let pending = undefined as PendingVerification | undefined;
             let mcUsername = undefined as string | undefined;
@@ -623,7 +641,18 @@ export function apply(ctx: Context, config: Config) {
     })
     ctx.on('message', async (session) => {
         if (session.channelId === config.bindChannel && config.ischat && session.userId !== config.botid && !session.isDirect) {
-            const chatCommand = `tellraw @a [{"text":"[QQ群] ","color":"gold"},{"text":"<","color":"white"},{"text":"${session.username}","color":"dark_red"},{"text":"> ","color":"white"},{"text":"${session.content}","color":"white"}]`;
+            const existingBinding = await ctx.database.get('minecraft_bindings', { koishiUserId: session.userId, platform: session.platform });
+            let username: string;
+            let isBind = false;
+            if (existingBinding.length === 0) {
+                username = session.username;
+            } else {
+                username = existingBinding[0].mcUsername;
+                isBind = true;
+            }
+            // const chatCommand = `tellraw @a [{"text":"[QQ群] ","color":"gold"},{"text":"<${username}>","color":"white"},{"text":"${session.content}","color":"white"}]`;
+            // 如果isBind就不加[QQ群]，否则加上
+            const chatCommand = `tellraw @a [{"text":"${isBind ? '' : '[QQ群] '}", "color":"gold"},{"text":"<${username}>","color":"white"},{"text":"${session.content}","color":"white"}]`;
             const Response = await sendRconCommand(config, chatCommand);
             //logger.info(session)
         }
