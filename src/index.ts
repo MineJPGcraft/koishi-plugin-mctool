@@ -182,6 +182,32 @@ export function apply(ctx: Context, config: Config) {
         }
     }
 
+    async function sendGroupNotice(event: 'login' | 'quit', mcUsername: string, koishiUserId?: string) {
+        const bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform);
+        if (!bot) {
+            if (config.isDev) logger.warn(`[Webhook] Cannot send ${event} notice: no bot matches ${config.platform}:${config.botid}`);
+            return;
+        }
+
+        let username = mcUsername;
+        if (enableAccountBinding && config.getGroupusername && koishiUserId) {
+            try {
+                username = (await bot.internal.getGroupMemberInfo(config.bindChannel, koishiUserId)).nickname || mcUsername;
+            } catch (error) {
+                if (config.isDev) logger.warn(`[Webhook] Failed to get QQ group nickname for ${mcUsername}:`, error);
+            }
+        }
+
+        try {
+            const session = bot.session();
+            const message = session.text(event === 'login' ? 'mctool.loginmsg' : 'mctool.quitmsg', [username]);
+            await bot.sendMessage(config.bindChannel, message);
+            if (config.isDev) logger.info(`[Webhook] Sent ${event} group notice for ${mcUsername}`);
+        } catch (error) {
+            logger.error(`[Webhook] Failed to send ${event} group notice for ${mcUsername}:`, error);
+        }
+    }
+
     ctx.server.post(config.webhookPath, async (c) => {
         if (config.webhookSecret) {
             const secret = c.request.headers['x-secret'] || c.request.query.secret;
@@ -205,6 +231,9 @@ export function apply(ctx: Context, config: Config) {
         }
 
         if (payload.event_type === 'login' && !enableAccountBinding) {
+            if (payload.player_name && config.isjoinquitmsg) {
+                await sendGroupNotice('login', payload.player_name);
+            }
             c.response.status = 200;
             return 'Account binding is disabled';
         }
@@ -235,17 +264,7 @@ export function apply(ctx: Context, config: Config) {
                         }
                     }
                     if (config.isjoinquitmsg) {
-                        const bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
-                        if (bot) {
-                            const session = bot.session()
-                            let username: string;
-                            if (config.getGroupusername) {
-                                username = (await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId)).nickname
-                            } else {
-                                username = mcUsername
-                            }
-                            bot.sendMessage(config.bindChannel, session.text('mctool.loginmsg', [username]))
-                        }
+                        await sendGroupNotice('login', mcUsername, existingBinding[0].koishiUserId);
                     }
                     return 'OK';
                 }
@@ -357,25 +376,20 @@ export function apply(ctx: Context, config: Config) {
             }
             c.response.status = 200;
         }
-        else if (payload.event_type === 'quit' && enableAccountBinding && config.isjoinquitmsg) {
-            //先判断是否绑定
+        else if (payload.event_type === 'quit' && payload.player_name && config.isjoinquitmsg) {
             const mcUsername = payload.player_name;
-            const existingBinding = await ctx.database.get('minecraft_bindings', { mcUsername });
-            if (existingBinding.length > 0) {
-                const bot = ctx.bots.find(bot => bot.selfId === config.botid && bot.platform === config.platform)
-                if (bot) {
-                    const session = bot.session();
-                    let username: string;
-                    if (config.getGroupusername) {
-                        username = (await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId)).nickname
-                        // logger.info(await bot.internal.getGroupMemberInfo(config.bindChannel, existingBinding[0].koishiUserId))
-                    } else {
-                        username = mcUsername
-                    }
-                    bot.sendMessage(config.bindChannel, session.text('mctool.quitmsg', [username]))
+            let koishiUserId: string | undefined;
+            if (enableAccountBinding) {
+                const existingBinding = await ctx.database.get('minecraft_bindings', { mcUsername });
+                if (!existingBinding.length) {
+                    c.response.status = 200;
+                    return 'OK';
                 }
+                koishiUserId = existingBinding[0].koishiUserId;
             }
+            await sendGroupNotice('quit', mcUsername, koishiUserId);
             c.response.status = 200;
+            return 'OK';
         } else {
             c.response.status = 200;
             return 'Not a valid event';
