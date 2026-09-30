@@ -46,6 +46,7 @@ export interface Config {
     getGroupusername: boolean;
     isAt: boolean;
     enableAccountBinding: boolean;
+    quoteGroupCommandReplies: boolean;
 }
 
 
@@ -71,6 +72,7 @@ export const Config: Schema<Config> = Schema.object({
     getGroupusername: Schema.boolean().default(false).description('是否尝试获取群聊用户名(仅OneBot)'),
     isAt: Schema.boolean().default(true).description('用户被提及是否在游戏里提示'),
     enableAccountBinding: Schema.boolean().default(true).description('是否启用账号绑定功能（关闭后仅保留群服聊天互通）'),
+    quoteGroupCommandReplies: Schema.boolean().default(false).description('群内插件指令回复是否引用触发该回复的群消息'),
 });
 
 declare module 'koishi' {
@@ -107,11 +109,38 @@ interface PendingVerification {
     timestamp: number;
 }
 
-
 export function apply(ctx: Context, config: Config) {
     ctx.i18n.define('zh-CN', require('./locales/zh-CN'))
     const mainCommand = config.commandPrefix || 'mc';
     const enableAccountBinding = config.enableAccountBinding !== false;
+    let latestGroupMessageId: string | undefined;
+
+    function isTargetGroupMessage(session: Session) {
+        return session.channelId === config.bindChannel
+            && session.platform === config.platform
+            && !session.isDirect
+            && !!session.messageId
+            && session.userId !== config.botid;
+    }
+
+    function trackLatestGroupMessage(session: Session) {
+        if (isTargetGroupMessage(session)) latestGroupMessageId = session.messageId!;
+    }
+
+    function withGroupReply(action: (...args: any[]) => any) {
+        return async (...args: any[]) => {
+            const session = (args[0] as { session?: Session } | undefined)?.session;
+            if (session) trackLatestGroupMessage(session);
+
+            const result = await action(...args);
+            if (!config.quoteGroupCommandReplies || typeof result !== 'string' || !result || !session || !isTargetGroupMessage(session)) {
+                return result;
+            }
+            if (latestGroupMessageId !== session.messageId) return result;
+
+            return [h('quote', { id: session.messageId }), h.text(result)];
+        };
+    }
 
     if (enableAccountBinding) ctx.model.extend('minecraft_bindings', {
         id: 'unsigned',
@@ -358,7 +387,7 @@ export function apply(ctx: Context, config: Config) {
 
         cmd.subcommand('.code <code:string>', '提交游戏内收到的验证码', { checkArgCount: true })
             .usage(`请提供你在游戏内收到的6位数字验证码。例如：${mainCommand}.code 123456`)
-            .action(async ({ session }, code) => {
+            .action(withGroupReply(async ({ session }, code) => {
                 if (!session?.userId || !session?.platform || !session?.bot?.selfId) {
                     return '无法获取您的用户信息，请稍后再试。';
                 }
@@ -429,7 +458,7 @@ export function apply(ctx: Context, config: Config) {
                     }
                     return '绑定过程中发生数据库错误，请联系管理员。';
                 }
-            });
+            }));
         ctx.middleware(async (session, next) => {
             if (session.isDirect && /^\d{6}$/.test(session.content ?? '')) {
                 const code = session.content!;
@@ -500,7 +529,7 @@ export function apply(ctx: Context, config: Config) {
         });
 
         cmd.subcommand('.info', '查看您绑定的 Minecraft 账号')
-            .action(async ({ session }) => {
+            .action(withGroupReply(async ({ session }) => {
                 if (!session?.userId || !session?.platform) {
                     return '无法获取用户信息。';
                 }
@@ -510,10 +539,10 @@ export function apply(ctx: Context, config: Config) {
                 } else {
                     return `您尚未绑定 Minecraft 账号。请通过进入 Minecraft 服务器触发绑定流程，然后在QQ中使用 \`${mainCommand}.code <验证码>\` 完成绑定。`;
                 }
-            });
+            }));
 
         ctx.command(`${mainCommand}.unbind <mcUsername:string>`, '管理员解除绑定 Minecraft 账号', { authority: 3 })
-            .action(async ({ session }, mcUsername) => {
+            .action(withGroupReply(async ({ session }, mcUsername) => {
                 if (!mcUsername) {
                     return '请提供要解除绑定的 Minecraft 用户名。'
                 }
@@ -535,10 +564,10 @@ export function apply(ctx: Context, config: Config) {
                     logger.error(`[Admin] Database error during unbind for ${mcUsername}:`, dbError);
                     return '解除绑定时发生数据库错误，请联系管理员。';
                 }
-            });
+            }));
         if (config.isdeath) {
             cmd.subcommand('.deaths', '查询死亡记录')
-                .action(async ({ session }) => {
+                .action(withGroupReply(async ({ session }) => {
                     if (!session?.userId || !session?.platform) {
                         return '无法获取用户信息，请稍后再试。';
                     }
@@ -589,10 +618,10 @@ export function apply(ctx: Context, config: Config) {
                         logger.error(`[CmdDeaths] Database error retrieving death records for ${platform}:${koishiUserId}:`, dbError);
                         return '查询死亡记录时发生数据库错误，请联系管理员。';
                     }
-                });
+                }));
         }
         cmd.subcommand('.list', '查看在线玩家')
-            .action(async ({ session }) => {
+            .action(withGroupReply(async ({ session }) => {
                 let response = await sendRconCommand(config, 'list');
                 response = response.trim();
                 const cleanedString = response.replace(/§./g, '');
@@ -603,9 +632,9 @@ export function apply(ctx: Context, config: Config) {
                     return `在线人数：${onlineCount}/${maxCount}`;
                 }
                 return cleanedString;
-            })
+            }))
         cmd.subcommand('.freeze', '冻结账号')
-            .action(async ({ session }) => {
+            .action(withGroupReply(async ({ session }) => {
                 if (!session?.userId || !session?.platform) {
                     return '无法获取用户信息，请稍后再试。';
                 }
@@ -624,9 +653,9 @@ export function apply(ctx: Context, config: Config) {
                 } catch (error) {
                     return '发生错误，请稍后再试。';
                 }
-            })
+            }))
         cmd.subcommand('.unfreeze', '解冻账号')
-            .action(async ({ session }) => {
+            .action(withGroupReply(async ({ session }) => {
                 if (!session?.userId || !session?.platform) {
                     return '无法获取用户信息，请稍后再试。';
                 }
@@ -644,7 +673,7 @@ export function apply(ctx: Context, config: Config) {
                 catch (error) {
                     return '发生错误，请稍后再试。';
                 }
-            })
+            }))
     }
     if (enableAccountBinding) registerAccountFeatures();
     ctx.on('guild-member-removed', async (session) => {
@@ -663,6 +692,7 @@ export function apply(ctx: Context, config: Config) {
         }
     })
     ctx.on('message', async (session) => {
+        trackLatestGroupMessage(session);
         if (session.channelId === config.bindChannel && config.ischat && session.userId !== config.botid && !session.isDirect) {
             const existingBinding = enableAccountBinding
                 ? await ctx.database.get('minecraft_bindings', { koishiUserId: session.userId, platform: session.platform })

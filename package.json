@@ -1,11 +1,10 @@
 {
   "name": "koishi-plugin-mctool",
   "description": "与MC服务器互通",
-  "version": "1.5.0",
-  "main": "lib/index.js",
-  "typings": "lib/index.d.ts",
+  "version": "1.5.1",
+  "main": "dist/index.js",
+  "typings": "dist/index.d.ts",
   "files": [
-    "lib",
     "dist"
   ],
   "license": "MIT",
